@@ -477,8 +477,15 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
+                    <label class="form-label" for="api-type">API Type</label>
+                    <select id="api-type" class="form-select">
+                        <option value="anthropic">Anthropic (Official)</option>
+                        <option value="agentrouter">AgentRouter</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label class="form-label" for="base-url">Base URL</label>
-                    <input type="text" id="base-url" class="form-input" placeholder="https://agentrouter.org">
+                    <input type="text" id="base-url" class="form-input" placeholder="https://api.anthropic.com">
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="auth-token">Auth Token</label>
@@ -696,13 +703,42 @@
                 const response = await fetch('/api/settings');
                 const settings = await response.json();
                 
+                document.getElementById('api-type').value = settings.api_type || 'anthropic';
                 document.getElementById('base-url').value = settings.base_url;
                 document.getElementById('model').value = settings.model;
                 document.getElementById('max-tokens').value = settings.max_tokens;
+                
+                // Update base URL placeholder based on API type
+                updateBaseUrlPlaceholder();
             } catch (error) {
                 console.error('Error loading settings:', error);
             }
         }
+
+        function updateBaseUrlPlaceholder() {
+            const apiType = document.getElementById('api-type').value;
+            const baseUrlInput = document.getElementById('base-url');
+            
+            if (apiType === 'anthropic') {
+                baseUrlInput.placeholder = 'https://api.anthropic.com';
+                if (!baseUrlInput.value || baseUrlInput.value.includes('agentrouter')) {
+                    baseUrlInput.value = 'https://api.anthropic.com';
+                }
+            } else {
+                baseUrlInput.placeholder = 'https://agentrouter.org';
+                if (!baseUrlInput.value || baseUrlInput.value.includes('anthropic')) {
+                    baseUrlInput.value = 'https://agentrouter.org';
+                }
+            }
+        }
+
+        // Add event listener for API type change
+        document.addEventListener('DOMContentLoaded', function() {
+            const apiTypeSelect = document.getElementById('api-type');
+            if (apiTypeSelect) {
+                apiTypeSelect.addEventListener('change', updateBaseUrlPlaceholder);
+            }
+        });
 
         function openSettings() {
             document.getElementById('settings-modal').style.display = 'block';
@@ -714,6 +750,7 @@
 
         async function saveSettings() {
             const settings = {
+                api_type: document.getElementById('api-type').value,
                 base_url: document.getElementById('base-url').value,
                 auth_token: document.getElementById('auth-token').value,
                 model: document.getElementById('model').value,

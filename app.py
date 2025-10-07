@@ -13,10 +13,11 @@ class Config:
     def __init__(self):
         self.config_file = "config.json"
         self.default_config = {
-            "base_url": "https://agentrouter.org",
+            "base_url": "https://api.anthropic.com",
             "auth_token": "",
             "model": "claude-3-opus-20240229",
-            "max_tokens": 1000
+            "max_tokens": 1000,
+            "api_type": "anthropic"  # anthropic or agentrouter
         }
         self.load_config()
 
@@ -39,8 +40,8 @@ class Config:
         except Exception as e:
             print(f"Error saving config: {e}")
 
-    def get(self, key):
-        return self.config.get(key, self.default_config.get(key))
+    def get(self, key, default=None):
+        return self.config.get(key, default or self.default_config.get(key))
 
     def set(self, key, value):
         self.config[key] = value
@@ -48,16 +49,24 @@ class Config:
 
 config = Config()
 
-class AgentRouterClient:
+class ClaudeClient:
     def __init__(self):
         self.base_url = config.get("base_url").rstrip('/')
         self.auth_token = config.get("auth_token")
+        self.api_type = config.get("api_type", "anthropic")
 
     def _headers(self):
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.auth_token}"
-        }
+        if self.api_type == "anthropic":
+            return {
+                "Content-Type": "application/json",
+                "x-api-key": self.auth_token,
+                "anthropic-version": "2023-06-01"
+            }
+        else:  # agentrouter
+            return {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.auth_token}"
+            }
 
     def complete(self, prompt, model=None, max_tokens=None):
         if not self.auth_token:
@@ -66,21 +75,79 @@ class AgentRouterClient:
         model = model or config.get("model")
         max_tokens = max_tokens or config.get("max_tokens")
         
-        url = f"{self.base_url}/v1/complete"
+        if self.api_type == "anthropic":
+            return self._call_anthropic_api(prompt, model, max_tokens)
+        else:
+            return self._call_agentrouter_api(prompt, model, max_tokens)
+
+    def _call_anthropic_api(self, prompt, model, max_tokens):
+        """Call the official Anthropic API"""
+        url = f"{self.base_url}/v1/messages"
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+
+        try:
+            resp = requests.post(url, headers=self._headers(), json=body, timeout=30)
+            resp.raise_for_status()
+            result = resp.json()
+            
+            # Convert Anthropic response format to our expected format
+            if "content" in result and len(result["content"]) > 0:
+                return {
+                    "completion": result["content"][0]["text"]
+                }
+            else:
+                return {"completion": "No response generated"}
+                
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Anthropic API request failed: {str(e)}")
+
+    def _call_agentrouter_api(self, prompt, model, max_tokens):
+        """Call the AgentRouter API with multiple endpoint attempts"""
+        # Try multiple possible endpoints
+        endpoints = [
+            f"{self.base_url}/v1/complete",
+            f"{self.base_url}/api/v1/complete", 
+            f"{self.base_url}/complete",
+            f"{self.base_url}/v1/chat/completions",
+            f"{self.base_url}/api/v1/chat/completions"
+        ]
+        
         body = {
             "model": model,
             "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
             "max_tokens_to_sample": max_tokens
         }
 
-        try:
-            resp = requests.post(url, headers=self._headers(), json=body, timeout=30)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"API request failed: {str(e)}")
+        last_error = None
+        for url in endpoints:
+            try:
+                resp = requests.post(url, headers=self._headers(), json=body, timeout=30)
+                if resp.status_code == 200:
+                    return resp.json()
+                elif resp.status_code == 404:
+                    continue  # Try next endpoint
+                else:
+                    resp.raise_for_status()
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                continue  # Try next endpoint
+        
+        # If all endpoints failed, provide helpful error message
+        if last_error:
+            raise Exception(f"AgentRouter API request failed: {str(last_error)}\n\nTried endpoints: {', '.join(endpoints)}\n\nPlease check:\n1. Your API token is correct\n2. The base URL is correct\n3. The AgentRouter service is running\n4. Your account has access to the API")
+        else:
+            raise Exception("All AgentRouter endpoints returned 404. Please verify your AgentRouter configuration.")
 
-client = AgentRouterClient()
+client = ClaudeClient()
 
 @app.route('/')
 def index():
@@ -204,7 +271,8 @@ def get_settings():
     return jsonify({
         'base_url': config.get('base_url'),
         'model': config.get('model'),
-        'max_tokens': config.get('max_tokens')
+        'max_tokens': config.get('max_tokens'),
+        'api_type': config.get('api_type')
     })
 
 @app.route('/api/settings', methods=['POST'])
@@ -214,6 +282,7 @@ def update_settings():
     config.set('base_url', data.get('base_url', config.get('base_url')))
     config.set('model', data.get('model', config.get('model')))
     config.set('max_tokens', data.get('max_tokens', config.get('max_tokens')))
+    config.set('api_type', data.get('api_type', config.get('api_type')))
     
     # Update auth token if provided
     if 'auth_token' in data:
@@ -221,7 +290,7 @@ def update_settings():
     
     # Recreate client with new config
     global client
-    client = AgentRouterClient()
+    client = ClaudeClient()
     
     return jsonify({'success': True})
 
